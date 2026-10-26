@@ -42,6 +42,16 @@ jobs:
           python3 -m pip install --upgrade pip
           python3 -m pip install lz4 capstone fonttools nsz gdown "backports.zstd; python_version < '3.14'"
 
+      - name: Thiết lập biến môi trường .NET
+        run: |
+          DOTNET_BIN=$(which dotnet)
+          REAL_DOTNET=$(python3 -c "import os, sys; print(os.path.dirname(os.path.realpath(sys.argv[1])))" "$DOTNET_BIN")
+          echo "Tìm thấy .NET tại: $REAL_DOTNET"
+          echo "DOTNET_ROOT=$REAL_DOTNET" >> $GITHUB_ENV
+          echo "DOTNET_ROOT_ARM64=$REAL_DOTNET" >> $GITHUB_ENV
+          sudo mkdir -p /etc/dotnet
+          echo "$REAL_DOTNET" | sudo tee /etc/dotnet/install_location_arm64 /etc/dotnet/install_location
+
       - name: Kiểm tra file prod.keys
         run: |
           if [ ! -f game/prod.keys ]; then
@@ -96,5 +106,7 @@ jobs:
         if: failure()
         with:
           name: build-failure-logs
-          path: game/*_build/logs/
+          path: |
+            game/*_build/logs/
+            game/*_survey/logs/
           retention-days: 7
