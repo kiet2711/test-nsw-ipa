@@ -1,0 +1,85 @@
+name: Build Game IPA
+
+on:
+  workflow_dispatch:
+    inputs:
+      game_download_url:
+        description: 'Link tải file game (Link Google Drive hoặc Direct URL)'
+        required: true
+        type: string
+        default: 'https://drive.google.com/file/d/1BEmbI0GHTFCBHIP13d7bARzGMZmMZTvi/view?usp=sharing'
+      game_file_name:
+        description: 'Tên file lưu lại (phải có đuôi .xci hoặc .nsp)'
+        required: true
+        default: 'Stardew Valley [0100DD400C468000].xci'
+
+jobs:
+  build:
+    name: Build iOS IPA
+    runs-on: macos-14
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Thiết lập Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Cài đặt công cụ hệ thống & thư viện
+        run: |
+          brew install xcodegen zstd spirv-cross glslang
+          brew install --cask dotnet-sdk
+          python3 -m pip install --upgrade pip
+          python3 -m pip install lz4 capstone fonttools nsz "backports.zstd" gdown
+
+      - name: Kiểm tra file prod.keys
+        run: |
+          if [ ! -f game/prod.keys ]; then
+            echo "::error::Không tìm thấy file game/prod.keys trong repository!"
+            exit 1
+          fi
+          echo "Đã tìm thấy game/prod.keys (kích thước: $(wc -c < game/prod.keys) bytes)"
+
+      - name: Tải file game về runner
+        run: |
+          mkdir -p game
+          URL="${{ inputs.game_download_url }}"
+          OUT="game/${{ inputs.game_file_name }}"
+          
+          echo "Bắt đầu tải file game về: $OUT"
+          if [[ "$URL" == *"drive.google.com"* ]]; then
+            echo "Phát hiện link Google Drive. Đang tải qua gdown..."
+            python3 -m gdown "$URL" -O "$OUT" --fuzzy
+          else
+            echo "Đang tải qua curl..."
+            curl -L -o "$OUT" "$URL"
+          fi
+
+          # Kiểm tra file đã tải xong và dung lượng hợp lệ (> 10MB)
+          if [ ! -f "$OUT" ]; then
+            echo "::error::Tải file game thất bại, không tìm thấy file sau khi tải!"
+            exit 1
+          fi
+
+          FILESIZE=$(stat -f%z "$OUT" 2>/dev/null || stat -c%s "$OUT" 2>/dev/null || echo 0)
+          echo "File game đã tải xong: $OUT ($FILESIZE bytes)"
+          if [ "$FILESIZE" -lt 10000000 ]; then
+            echo "::error::File tải về quá nhỏ ($FILESIZE bytes). Có thể link Google Drive chưa bật quyền chia sẻ (Bất kỳ ai có liên kết)!"
+            head -n 20 "$OUT"
+            exit 1
+          fi
+
+      - name: Đóng gói IPA (build_ipa_from_nsp.py)
+        run: |
+          python3 scripts/build_ipa_from_nsp.py game -k game/prod.keys --no-keep-extracted
+
+      - name: Upload file IPA lên Artifacts
+        uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: StardewValley-IPA
+          path: game/*.ipa
+          retention-days: 7
