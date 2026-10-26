@@ -1,6 +1,8 @@
 name: Build Game IPA
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       game_download_url:
@@ -12,6 +14,10 @@ on:
         description: 'Tên file lưu lại (phải có đuôi .xci hoặc .nsp)'
         required: true
         default: 'Stardew Valley [0100DD400C468000].xci'
+
+env:
+  DEFAULT_URL: 'https://drive.google.com/file/d/1BEmbI0GHTFCBHIP13d7bARzGMZmMZTvi/view?usp=sharing'
+  DEFAULT_FILE: 'Stardew Valley [0100DD400C468000].xci'
 
 jobs:
   build:
@@ -30,10 +36,11 @@ jobs:
 
       - name: Cài đặt công cụ hệ thống & thư viện
         run: |
-          brew install xcodegen zstd spirv-cross glslang
-          brew install --cask dotnet-sdk
+          command -v xcodegen || brew install xcodegen
+          brew install zstd spirv-cross glslang || true
+          command -v dotnet || brew install --cask dotnet-sdk || true
           python3 -m pip install --upgrade pip
-          python3 -m pip install lz4 capstone fonttools nsz "backports.zstd" gdown
+          python3 -m pip install lz4 capstone fonttools nsz gdown "backports.zstd; python_version < '3.14'"
 
       - name: Kiểm tra file prod.keys
         run: |
@@ -46,8 +53,8 @@ jobs:
       - name: Tải file game về runner
         run: |
           mkdir -p game
-          URL="${{ inputs.game_download_url }}"
-          OUT="game/${{ inputs.game_file_name }}"
+          URL="${{ inputs.game_download_url || env.DEFAULT_URL }}"
+          OUT="game/${{ inputs.game_file_name || env.DEFAULT_FILE }}"
           
           echo "Bắt đầu tải file game về: $OUT"
           if [[ "$URL" == *"drive.google.com"* ]]; then
