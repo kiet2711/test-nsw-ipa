@@ -52,7 +52,7 @@ jobs:
           echo "Bắt đầu tải file game về: $OUT"
           if [[ "$URL" == *"drive.google.com"* ]]; then
             echo "Phát hiện link Google Drive. Đang tải qua gdown..."
-            python3 -m gdown "$URL" -O "$OUT" --fuzzy
+            python3 -m gdown "$URL" -O "$OUT"
           else
             echo "Đang tải qua curl..."
             curl -L -o "$OUT" "$URL"
