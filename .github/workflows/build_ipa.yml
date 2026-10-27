@@ -4,12 +4,32 @@ on:
   workflow_dispatch:
     inputs:
       game_download_url:
-        description: 'Link tải game (Google Drive hoặc Direct URL)'
+        description: 'Link tải Game gốc / Base Game (hoặc file ZIP gộp cả Base/Update/DLC)'
         required: true
         type: string
         default: 'https://drive.google.com/file/d/1D527vQTykL4WggIbWdGEbttQlxyR2Ua5/view?usp=sharing'
       game_file_name:
-        description: 'Tên file (Tùy chọn: để trống để tự động lấy tên file gốc từ Google Drive)'
+        description: 'Tên file Base (Tùy chọn: để trống để tự động lấy tên file gốc)'
+        required: false
+        type: string
+        default: ''
+      update_download_url:
+        description: 'Link tải Update (Tùy chọn: file .nsp/.nsz hoặc .zip)'
+        required: false
+        type: string
+        default: ''
+      update_file_name:
+        description: 'Tên file Update (Tùy chọn)'
+        required: false
+        type: string
+        default: ''
+      dlc_download_url:
+        description: 'Link tải DLC (Tùy chọn: file .nsp/.nsz hoặc file .zip chứa DLC Pack)'
+        required: false
+        type: string
+        default: ''
+      dlc_file_name:
+        description: 'Tên file DLC (Tùy chọn)'
         required: false
         type: string
         default: ''
@@ -41,7 +61,7 @@ jobs:
       - name: Cài đặt công cụ hệ thống & thư viện
         run: |
           command -v xcodegen || brew install xcodegen
-          brew install zstd spirv-cross glslang || true
+          brew install zstd spirv-cross glslang p7zip || brew install sevenzip || true
           command -v dotnet || brew install --cask dotnet-sdk || true
           python3 -m pip install --upgrade pip
           python3 -m pip install lz4 capstone fonttools nsz gdown "backports.zstd; python_version < '3.14'"
@@ -64,42 +84,99 @@ jobs:
           fi
           echo "Đã tìm thấy game/prod.keys (kích thước: $(wc -c < game/prod.keys) bytes)"
 
-      - name: Tải file game về runner
+      - name: Tải file game, update và DLC về runner
         run: |
           mkdir -p game
-          URL="${{ inputs.game_download_url || env.DEFAULT_URL }}"
-          NAME="${{ inputs.game_file_name }}"
 
-          echo "Bắt đầu tải file game từ: $URL"
-          if [[ "$URL" == *"drive.google.com"* ]]; then
-            echo "Phát hiện link Google Drive. Đang tải qua gdown..."
-            if [ -n "$NAME" ]; then
-              python3 -m gdown "$URL" -O "game/$NAME"
-            else
-              python3 -m gdown "$URL" -O game/
+          # Hàm tải file dùng chung (hỗ trợ Google Drive & Direct URL)
+          download_asset() {
+            local url="$1"
+            local name="$2"
+            local desc="$3"
+            local fallback_file="$4"
+
+            if [ -z "$url" ]; then
+              return 0
             fi
-          else
-            echo "Đang tải qua curl..."
-            if [ -n "$NAME" ]; then
-              curl -L -o "game/$NAME" "$URL"
+
+            echo "===================================================="
+            echo "Bắt đầu tải $desc từ: $url"
+            if [[ "$url" == *"drive.google.com"* ]]; then
+              echo "Phát hiện link Google Drive. Đang tải qua gdown..."
+              if [ -n "$name" ]; then
+                python3 -m gdown "$url" -O "game/$name"
+              else
+                python3 -m gdown "$url" -O game/
+              fi
             else
-              curl -L -O -J --output-dir game "$URL" || curl -L -o "game/${{ env.DEFAULT_FILE }}" "$URL"
+              echo "Đang tải qua curl..."
+              if [ -n "$name" ]; then
+                curl -L -o "game/$name" "$url"
+              else
+                curl -L -O -J --output-dir game "$url" || ( [ -n "$fallback_file" ] && curl -L -o "game/$fallback_file" "$url" )
+              fi
             fi
+          }
+
+          # Tải Game gốc (Base)
+          download_asset "${{ inputs.game_download_url || env.DEFAULT_URL }}" "${{ inputs.game_file_name }}" "Base Game" "${{ env.DEFAULT_FILE }}"
+
+          # Tải Update (nếu có)
+          download_asset "${{ inputs.update_download_url }}" "${{ inputs.update_file_name }}" "Update" ""
+
+          # Tải DLC (nếu có)
+          download_asset "${{ inputs.dlc_download_url }}" "${{ inputs.dlc_file_name }}" "DLC" ""
+
+          # Kiểm tra và giải nén tự động nếu tải về file nén (.zip, .7z, .rar, .tar.gz)
+          echo "----------------------------------------------------"
+          echo "Kiểm tra các file nén trong thư mục game/..."
+          mkdir -p game/extracted_temp
+          for archive in game/*.zip game/*.7z game/*.rar game/*.tar.gz; do
+            if [ -f "$archive" ]; then
+              echo "Phát hiện file nén: $archive. Đang tiến hành giải nén..."
+              if [[ "$archive" == *.zip ]]; then
+                unzip -q -o "$archive" -d game/extracted_temp/
+              elif command -v 7z >/dev/null 2>&1; then
+                7z x -y "$archive" -ogame/extracted_temp/
+              elif command -v 7za >/dev/null 2>&1; then
+                7za x -y "$archive" -ogame/extracted_temp/
+              else
+                echo "::warning::Không tìm thấy công cụ giải nén phù hợp cho $archive"
+              fi
+              rm -f "$archive"
+            fi
+          done
+
+          # Đưa tất cả file ROM được giải nén ra thư mục gốc game/
+          if [ -d "game/extracted_temp" ]; then
+            find game/extracted_temp -type f \( -name "*.nsp" -o -name "*.xci" -o -name "*.nsz" -o -name "*.xcz" \) -exec mv -v {} game/ \;
+            rm -rf game/extracted_temp
           fi
 
-          # Tìm file ROM (.nsp, .xci, .nsz, .xcz) hợp lệ trong thư mục game
-          GAME_FILE=$(find game -maxdepth 1 -type f \( -name "*.nsp" -o -name "*.xci" -o -name "*.nsz" -o -name "*.xcz" \) | head -n 1)
-          if [ -z "$GAME_FILE" ]; then
-            echo "::error::Không tìm thấy file ROM (.nsp, .xci, .nsz, .xcz) nào trong thư mục game sau khi tải!"
+          # Di chuyển bất kỳ file ROM nào nằm trong thư mục con ra thẳng thư mục game/
+          find game -mindepth 2 -type f \( -name "*.nsp" -o -name "*.xci" -o -name "*.nsz" -o -name "*.xcz" \) -exec mv -v {} game/ \; 2>/dev/null || true
+
+          # Liệt kê và kiểm tra các file ROM tìm thấy
+          echo "===================================================="
+          echo "Danh sách các file ROM hợp lệ trong thư mục game/:"
+          ROM_FILES=$(find game -maxdepth 1 -type f \( -name "*.nsp" -o -name "*.xci" -o -name "*.nsz" -o -name "*.xcz" \))
+          if [ -z "$ROM_FILES" ]; then
+            echo "::error::Không tìm thấy file ROM (.nsp, .xci, .nsz, .xcz) nào trong thư mục game sau khi tải và giải nén!"
             ls -la game/
             exit 1
           fi
 
-          FILESIZE=$(stat -f%z "$GAME_FILE" 2>/dev/null || stat -c%s "$GAME_FILE" 2>/dev/null || echo 0)
-          echo "Đã phát hiện file game: $GAME_FILE ($FILESIZE bytes)"
-          if [ "$FILESIZE" -lt 10000000 ]; then
-            echo "::error::File tải về quá nhỏ ($FILESIZE bytes). Có thể link Google Drive chưa bật quyền chia sẻ (Bất kỳ ai có liên kết)!"
-            head -n 20 "$GAME_FILE"
+          TOTAL_SIZE=0
+          for rf in $ROM_FILES; do
+            FSIZE=$(stat -f%z "$rf" 2>/dev/null || stat -c%s "$rf" 2>/dev/null || echo 0)
+            echo "  + $(basename "$rf") ($FSIZE bytes)"
+            TOTAL_SIZE=$((TOTAL_SIZE + FSIZE))
+          done
+          echo "Tổng dung lượng ROM: $TOTAL_SIZE bytes"
+
+          if [ "$TOTAL_SIZE" -lt 10000000 ]; then
+            echo "::error::Tổng kích thước file quá nhỏ ($TOTAL_SIZE bytes). Có thể link Google Drive chưa bật quyền chia sẻ (Bất kỳ ai có liên kết) hoặc link tải bị lỗi!"
+            head -n 20 $ROM_FILES 2>/dev/null || true
             exit 1
           fi
 
