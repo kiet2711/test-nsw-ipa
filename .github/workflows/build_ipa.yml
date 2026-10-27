@@ -13,6 +13,11 @@ on:
         required: false
         type: string
         default: ''
+      mod_download_url:
+        description: 'Link file zip Mod/Việt hóa (Google Drive hoặc URL - Tùy chọn)'
+        required: false
+        type: string
+        default: ''
 
 env:
   DEFAULT_URL: 'https://drive.google.com/file/d/1D527vQTykL4WggIbWdGEbttQlxyR2Ua5/view?usp=sharing'
@@ -96,6 +101,37 @@ jobs:
             echo "::error::File tải về quá nhỏ ($FILESIZE bytes). Có thể link Google Drive chưa bật quyền chia sẻ (Bất kỳ ai có liên kết)!"
             head -n 20 "$GAME_FILE"
             exit 1
+          fi
+
+      - name: Tải và chuẩn bị file Mod / Việt hóa (nếu có)
+        if: "${{ inputs.mod_download_url != '' }}"
+        run: |
+          MOD_URL="${{ inputs.mod_download_url }}"
+          mkdir -p game/mod_temp
+          echo "Bắt đầu tải file mod từ: $MOD_URL"
+          if [[ "$MOD_URL" == *"drive.google.com"* ]]; then
+            echo "Phát hiện link Google Drive. Đang tải mod qua gdown..."
+            python3 -m gdown "$MOD_URL" -O game/mod_temp/mod.zip
+          else
+            echo "Đang tải mod qua curl..."
+            curl -L -o game/mod_temp/mod.zip "$MOD_URL"
+          fi
+
+          if [ -f game/mod_temp/mod.zip ]; then
+            echo "Đang giải nén mod..."
+            mkdir -p game/romfs
+            unzip -q -o game/mod_temp/mod.zip -d game/mod_temp/extracted
+            # Kiểm tra nếu file zip chứa sẵn thư mục romfs bên trong
+            if [ -d "game/mod_temp/extracted/romfs" ]; then
+              cp -R game/mod_temp/extracted/romfs/* game/romfs/
+            else
+              cp -R game/mod_temp/extracted/* game/romfs/
+            fi
+            echo "Đã chuẩn bị xong thư mục mod tại game/romfs:"
+            ls -la game/romfs/
+            rm -rf game/mod_temp
+          else
+            echo "::warning::Không tìm thấy file mod sau khi tải, bỏ qua bước áp dụng mod."
           fi
 
       - name: Đóng gói IPA (build_ipa_from_nsp.py)

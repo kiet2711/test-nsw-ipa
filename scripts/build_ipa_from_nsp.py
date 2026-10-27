@@ -60,6 +60,7 @@ PROVISIONAL = False                     # build from a provisional profile even 
 HEAP_CHECK = True                       # a provisional profile whose game has virtual address memory and sets a heap: boot it on the Mac until its heap request (a few seconds) to size the heap region
 HEAP_CHECK_SECS = 30                    # the longest heap check (it stops at the first heap request, or HEAP_CHECK_NNMAIN_SECS into nnMain without one)
 HEAP_CHECK_NNMAIN_SECS = 5
+MOD_DIR = ''                            # optional folder holding LayeredFS mod / translated RomFS files (empty = auto-detect romfs/ or mod/ in NSP folder)
 
 PROGRESS = 'auto'                       # stage lines on the console: 'bar' (one line per stage, redrawn in place), 'lines' (a plain line every BEAT seconds), 'off' (only each stage's start and end); 'auto' = bar in a terminal or Spyder, lines when the output goes to a file; 'json' = one JSON event per line, for a program that shows the build
 BEAT = 30                               # seconds between progress lines in 'lines' mode
@@ -1676,6 +1677,7 @@ def parse_args(argv):
     ap.add_argument('--profile-out', help='where the provisional profile goes (default: <NSP folder>/<title ID>_build/profile)')
     ap.add_argument('--provisional', action='store_true', help='build from a provisional profile even when dm/games has one for the game (tests the guesses)')
     ap.add_argument('--no-heap-check', action='store_true', help='a provisional profile: skip the heap check on the Mac (the alias / heap split stays a guess)')
+    ap.add_argument('--mod', help='folder holding LayeredFS mod / translated RomFS files to apply over extracted RomFS (default: MOD_DIR setting or romfs/ in NSP folder)')
     ap.add_argument('--progress', choices=('auto', 'bar', 'lines', 'json', 'off'), help='stage lines on the console: bar = one line per stage, redrawn in place; lines = a plain line every BEAT seconds; json = newline-delimited JSON events (no prompts); off = only each stage\'s start and end '
                     '(default: the PROGRESS setting; auto = bar in a terminal or Spyder, lines when the output goes to a file or a pipe)')
     return ap.parse_args(argv)
@@ -1827,6 +1829,18 @@ def main(args=None):
         say(f'derived game profile for {pkg_ver} ({disp}): {g.dir}')
     sv = versions if derived else need   # the versions whose files the shaders come from
     game = dirs[pkg_ver]
+    mod_arg = getattr(args, 'mod', None) or MOD_DIR
+    mod_path = Path(os.path.expanduser(mod_arg)).resolve() if mod_arg else (
+        Path(os.environ['DM_MOD_DIR']).resolve() if 'DM_MOD_DIR' in os.environ else (
+            (nsp_dir / 'romfs') if (nsp_dir / 'romfs').is_dir() else (
+                (nsp_dir / 'mod') if (nsp_dir / 'mod').is_dir() else None
+            )
+        )
+    )
+    if mod_path and mod_path.is_dir():
+        mod_src = (mod_path / 'romfs') if (mod_path / 'romfs').is_dir() else mod_path
+        say(f'applying LayeredFS mod: {mod_src} → {game / "RomFS"}')
+        shutil.copytree(mod_src, game / 'RomFS', dirs_exist_ok=True)
     # how the shaders are got follows from the packed version's files (profile_guess.py shader_sources): the graphics API, and the shaders made only at run time
     src = pg.build_sources(game / 'ExeFS', game / 'RomFS', g.words('modules'))
     gfx = src['graphics'][0]   # nvn, vulkan (Hades: the host's Vulkan layer, SPIR-V shaders) or gl (Digimon Story Cyber Sleuth: the host's GL layer, GLSL sources)
