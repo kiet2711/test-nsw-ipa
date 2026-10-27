@@ -1838,7 +1838,8 @@ def main(args=None):
         )
     )
     if mod_path and mod_path.is_dir():
-        mod_src = (mod_path / 'romfs') if (mod_path / 'romfs').is_dir() else mod_path
+        romfs_subs = [p for p in mod_path.rglob('*') if p.is_dir() and p.name.lower() == 'romfs']
+        mod_src = romfs_subs[0] if romfs_subs else mod_path
         say(f'applying LayeredFS mod: {mod_src} → {game / "RomFS"}')
         shutil.copytree(mod_src, game / 'RomFS', dirs_exist_ok=True)
     # how the shaders are got follows from the packed version's files (profile_guess.py shader_sources): the graphics API, and the shaders made only at run time

@@ -121,10 +121,13 @@ jobs:
             echo "Đang giải nén mod..."
             mkdir -p game/romfs
             unzip -q -o game/mod_temp/mod.zip -d game/mod_temp/extracted
-            # Kiểm tra nếu file zip chứa sẵn thư mục romfs bên trong
-            if [ -d "game/mod_temp/extracted/romfs" ]; then
-              cp -R game/mod_temp/extracted/romfs/* game/romfs/
+            # Tự động tìm thư mục romfs ở bất kỳ cấp độ nào bên trong file zip
+            FOUND_ROMFS=$(find game/mod_temp/extracted -type d -iname "romfs" | head -n 1)
+            if [ -n "$FOUND_ROMFS" ]; then
+              echo "Đã tự động tìm thấy thư mục romfs tại: $FOUND_ROMFS"
+              cp -R "$FOUND_ROMFS"/* game/romfs/
             else
+              echo "Không có thư mục romfs lồng nhau, sao chép toàn bộ nội dung..."
               cp -R game/mod_temp/extracted/* game/romfs/
             fi
             echo "Đã chuẩn bị xong thư mục mod tại game/romfs:"
