@@ -13,7 +13,7 @@ on:
         description: 'Link tải game (Google Drive hoặc Direct URL)'
         required: true
         type: string
-        default: 'https://drive.google.com/file/d/1BEmbI0GHTFCBHIP13d7bARzGMZmMZTvi/view?usp=sharing'
+        default: 'https://drive.google.com/file/d/1D527vQTykL4WggIbWdGEbttQlxyR2Ua5/view?usp=sharing'
       game_file_name:
         description: 'Tên file (Tùy chọn: để trống để tự động lấy tên file gốc từ Google Drive)'
         required: false
@@ -21,8 +21,8 @@ on:
         default: ''
 
 env:
-  DEFAULT_URL: 'https://drive.google.com/file/d/1BEmbI0GHTFCBHIP13d7bARzGMZmMZTvi/view?usp=sharing'
-  DEFAULT_FILE: 'Stardew Valley [0100DD400C468000].xci'
+  DEFAULT_URL: 'https://drive.google.com/file/d/1D527vQTykL4WggIbWdGEbttQlxyR2Ua5/view?usp=sharing'
+  DEFAULT_FILE: 'Crayon Shin-chan [01005F0017566000].xci'
 
 jobs:
   build:
@@ -75,9 +75,9 @@ jobs:
           if [[ "$URL" == *"drive.google.com"* ]]; then
             echo "Phát hiện link Google Drive. Đang tải qua gdown..."
             if [ -n "$NAME" ]; then
-              python3 -m gdown --fuzzy "$URL" -O "game/$NAME"
+              python3 -m gdown "$URL" -O "game/$NAME"
             else
-              python3 -m gdown --fuzzy "$URL" -O game/
+              python3 -m gdown "$URL" -O game/
             fi
           else
             echo "Đang tải qua curl..."
