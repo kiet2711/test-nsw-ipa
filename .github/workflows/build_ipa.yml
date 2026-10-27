@@ -3,17 +3,22 @@ name: Build Game IPA
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - '**.md'
+      - '.gitignore'
+      - 'docs/**'
   workflow_dispatch:
     inputs:
       game_download_url:
-        description: 'Link tải file game (Link Google Drive hoặc Direct URL)'
+        description: 'Link tải game (Google Drive hoặc Direct URL)'
         required: true
         type: string
         default: 'https://drive.google.com/file/d/1BEmbI0GHTFCBHIP13d7bARzGMZmMZTvi/view?usp=sharing'
       game_file_name:
-        description: 'Tên file lưu lại (phải có đuôi .xci hoặc .nsp)'
-        required: true
-        default: 'Stardew Valley [0100DD400C468000].xci'
+        description: 'Tên file (Tùy chọn: để trống để tự động lấy tên file gốc từ Google Drive)'
+        required: false
+        type: string
+        default: ''
 
 env:
   DEFAULT_URL: 'https://drive.google.com/file/d/1BEmbI0GHTFCBHIP13d7bARzGMZmMZTvi/view?usp=sharing'
@@ -64,28 +69,38 @@ jobs:
         run: |
           mkdir -p game
           URL="${{ inputs.game_download_url || env.DEFAULT_URL }}"
-          OUT="game/${{ inputs.game_file_name || env.DEFAULT_FILE }}"
-          
-          echo "Bắt đầu tải file game về: $OUT"
+          NAME="${{ inputs.game_file_name }}"
+
+          echo "Bắt đầu tải file game từ: $URL"
           if [[ "$URL" == *"drive.google.com"* ]]; then
             echo "Phát hiện link Google Drive. Đang tải qua gdown..."
-            python3 -m gdown "$URL" -O "$OUT"
+            if [ -n "$NAME" ]; then
+              python3 -m gdown --fuzzy "$URL" -O "game/$NAME"
+            else
+              python3 -m gdown --fuzzy "$URL" -O game/
+            fi
           else
             echo "Đang tải qua curl..."
-            curl -L -o "$OUT" "$URL"
+            if [ -n "$NAME" ]; then
+              curl -L -o "game/$NAME" "$URL"
+            else
+              curl -L -O -J --output-dir game "$URL" || curl -L -o "game/${{ env.DEFAULT_FILE }}" "$URL"
+            fi
           fi
 
-          # Kiểm tra file đã tải xong và dung lượng hợp lệ (> 10MB)
-          if [ ! -f "$OUT" ]; then
-            echo "::error::Tải file game thất bại, không tìm thấy file sau khi tải!"
+          # Tìm file ROM (.nsp, .xci, .nsz, .xcz) hợp lệ trong thư mục game
+          GAME_FILE=$(find game -maxdepth 1 -type f \( -name "*.nsp" -o -name "*.xci" -o -name "*.nsz" -o -name "*.xcz" \) | head -n 1)
+          if [ -z "$GAME_FILE" ]; then
+            echo "::error::Không tìm thấy file ROM (.nsp, .xci, .nsz, .xcz) nào trong thư mục game sau khi tải!"
+            ls -la game/
             exit 1
           fi
 
-          FILESIZE=$(stat -f%z "$OUT" 2>/dev/null || stat -c%s "$OUT" 2>/dev/null || echo 0)
-          echo "File game đã tải xong: $OUT ($FILESIZE bytes)"
+          FILESIZE=$(stat -f%z "$GAME_FILE" 2>/dev/null || stat -c%s "$GAME_FILE" 2>/dev/null || echo 0)
+          echo "Đã phát hiện file game: $GAME_FILE ($FILESIZE bytes)"
           if [ "$FILESIZE" -lt 10000000 ]; then
             echo "::error::File tải về quá nhỏ ($FILESIZE bytes). Có thể link Google Drive chưa bật quyền chia sẻ (Bất kỳ ai có liên kết)!"
-            head -n 20 "$OUT"
+            head -n 20 "$GAME_FILE"
             exit 1
           fi
 
@@ -93,11 +108,23 @@ jobs:
         run: |
           python3 scripts/build_ipa_from_nsp.py game -k game/prod.keys --no-keep-extracted
 
+      - name: Xác định tên Artifact IPA
+        if: success()
+        run: |
+          IPA_PATH=$(find game -maxdepth 1 -name "*.ipa" | head -n 1)
+          if [ -n "$IPA_PATH" ]; then
+            IPA_BASE=$(basename "$IPA_PATH" .ipa)
+            echo "ARTIFACT_NAME=${IPA_BASE}" >> $GITHUB_ENV
+            echo "Tên artifact sẽ là: ${IPA_BASE}"
+          else
+            echo "ARTIFACT_NAME=Game-IPA" >> $GITHUB_ENV
+          fi
+
       - name: Upload file IPA lên Artifacts
         uses: actions/upload-artifact@v4
         if: success()
         with:
-          name: StardewValley-IPA
+          name: ${{ env.ARTIFACT_NAME || 'Game-IPA' }}
           path: game/*.ipa
           retention-days: 7
 
