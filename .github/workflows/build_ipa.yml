@@ -1,12 +1,6 @@
 name: Build Game IPA
 
 on:
-  push:
-    branches: [main]
-    paths-ignore:
-      - '**.md'
-      - '.gitignore'
-      - 'docs/**'
   workflow_dispatch:
     inputs:
       game_download_url:
