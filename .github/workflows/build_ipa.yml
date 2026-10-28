@@ -4,22 +4,22 @@ on:
   workflow_dispatch:
     inputs:
       game_download_url:
-        description: 'Link tải Game gốc / Base Game (hoặc file ZIP gộp Base/Update/DLC)'
+        description: 'Link tải Game (Thư mục Google Drive chứa Base/Update/DLC/Mod, hoặc link file ROM/ZIP)'
         required: true
         type: string
         default: 'https://drive.google.com/file/d/1D527vQTykL4WggIbWdGEbttQlxyR2Ua5/view?usp=sharing'
       update_download_url:
-        description: 'Link tải Update (Tùy chọn: file .nsp/.nsz hoặc .zip)'
+        description: 'Link tải Update (Tùy chọn: chỉ nhập nếu không dùng thư mục gộp)'
         required: false
         type: string
         default: ''
       dlc_download_url:
-        description: 'Link tải DLC (Tùy chọn: file .nsp/.nsz hoặc file .zip chứa DLC)'
+        description: 'Link tải DLC (Tùy chọn: chỉ nhập nếu không dùng thư mục gộp)'
         required: false
         type: string
         default: ''
       mod_download_url:
-        description: 'Link file zip Mod/Việt hóa (Tùy chọn: Google Drive hoặc Direct URL)'
+        description: 'Link tải Mod/Việt hóa (Tùy chọn: chỉ nhập nếu không dùng thư mục gộp)'
         required: false
         type: string
         default: ''
@@ -68,11 +68,11 @@ jobs:
           fi
           echo "Đã tìm thấy game/prod.keys (kích thước: $(wc -c < game/prod.keys) bytes)"
 
-      - name: Tải file game, update và DLC về runner
+      - name: Tải file game, update, DLC và Mod về runner
         run: |
           mkdir -p game
 
-          # Hàm tải file dùng chung (hỗ trợ Google Drive & Direct URL)
+          # Hàm tải file/folder dùng chung (hỗ trợ Google Drive File/Folder & Direct URL)
           download_asset() {
             local url="$1"
             local desc="$2"
@@ -84,51 +84,92 @@ jobs:
             echo "===================================================="
             echo "Bắt đầu tải $desc từ: $url"
             if [[ "$url" == *"drive.google.com"* ]]; then
-              echo "Phát hiện link Google Drive. Đang tải qua gdown..."
-              python3 -m gdown "$url" -O game/
+              if [[ "$url" == *"/folders/"* ]]; then
+                echo "Phát hiện link Thư mục Google Drive (Folder). Đang tải toàn bộ thư mục qua gdown..."
+                python3 -m gdown --folder "$url" -O game/
+              else
+                echo "Phát hiện link File Google Drive. Đang tải qua gdown..."
+                python3 -m gdown "$url" -O game/
+              fi
             else
               echo "Đang tải qua curl..."
               curl -L -O -J --output-dir game "$url"
             fi
           }
 
-          # Tải Game gốc (Base)
-          download_asset "${{ inputs.game_download_url || env.DEFAULT_URL }}" "Base Game"
+          # Tải Game gốc / Thư mục tổng hợp
+          download_asset "${{ inputs.game_download_url || env.DEFAULT_URL }}" "Game / Thư mục dữ liệu"
 
-          # Tải Update (nếu có)
+          # Tải Update riêng (nếu có nhập link riêng)
           download_asset "${{ inputs.update_download_url }}" "Update"
 
-          # Tải DLC (nếu có)
+          # Tải DLC riêng (nếu có nhập link riêng)
           download_asset "${{ inputs.dlc_download_url }}" "DLC"
 
-          # Kiểm tra và giải nén tự động nếu tải về file nén (.zip, .7z, .rar, .tar.gz)
+          # Xử lý đồng bộ cấu trúc nếu gdown tải về dạng thư mục con bên trong game/
           echo "----------------------------------------------------"
-          echo "Kiểm tra các file nén trong thư mục game/..."
+          echo "Đồng bộ cấu trúc thư mục sau khi tải..."
+
+          # Nếu có thư mục romfs bên trong thư mục con do Google Drive tạo ra, đưa về game/romfs/
+          FOUND_SUB_ROMFS=$(find game -mindepth 2 -type d -iname "romfs" | head -n 1)
+          if [ -n "$FOUND_SUB_ROMFS" ]; then
+            echo "Phát hiện thư mục romfs bên trong thư mục con: $FOUND_SUB_ROMFS. Đang đưa về game/romfs/..."
+            mkdir -p game/romfs
+            cp -R "$FOUND_SUB_ROMFS"/* game/romfs/
+            rm -rf "$FOUND_SUB_ROMFS"
+          fi
+
+          # Di chuyển tất cả file từ các thư mục con (ngoại trừ romfs và extracted_temp) ra thẳng thư mục gốc game/
+          find game -mindepth 2 -not -path "game/romfs*" -not -path "game/extracted_temp*" -type f -exec mv -v {} game/ \; 2>/dev/null || true
+          # Dọn dẹp các thư mục con rỗng
+          find game -mindepth 1 -not -path "game/romfs*" -not -path "game/extracted_temp*" -type d -empty -delete 2>/dev/null || true
+
+          # Kiểm tra và phân loại các file nén trong thư mục game/ (.zip, .7z, .rar, .tar.gz)
+          echo "----------------------------------------------------"
+          echo "Kiểm tra và phân loại các file nén trong thư mục game/..."
           mkdir -p game/extracted_temp
           for archive in game/*.zip game/*.7z game/*.rar game/*.tar.gz; do
             if [ -f "$archive" ]; then
-              echo "Phát hiện file nén: $archive. Đang tiến hành giải nén..."
+              echo "Phát hiện file nén: $(basename "$archive"). Đang tiến hành phân tích..."
+              mkdir -p game/extracted_temp/current
               if [[ "$archive" == *.zip ]]; then
-                unzip -q -o "$archive" -d game/extracted_temp/
+                unzip -q -o "$archive" -d game/extracted_temp/current/
               elif command -v 7z >/dev/null 2>&1; then
-                7z x -y "$archive" -ogame/extracted_temp/
+                7z x -y "$archive" -ogame/extracted_temp/current/
               elif command -v 7za >/dev/null 2>&1; then
-                7za x -y "$archive" -ogame/extracted_temp/
+                7za x -y "$archive" -ogame/extracted_temp/current/
               else
                 echo "::warning::Không tìm thấy công cụ giải nén phù hợp cho $archive"
               fi
+
+              # 1. Kiểm tra xem file nén có chứa ROM (.nsp, .xci, .nsz, .xcz) hay không
+              FOUND_ROMS=$(find game/extracted_temp/current -type f \( -name "*.nsp" -o -name "*.xci" -o -name "*.nsz" -o -name "*.xcz" \))
+              if [ -n "$FOUND_ROMS" ]; then
+                echo "  -> Tìm thấy file ROM trong $(basename "$archive"). Đang chuyển ra game/..."
+                find game/extracted_temp/current -type f \( -name "*.nsp" -o -name "*.xci" -o -name "*.nsz" -o -name "*.xcz" \) -exec mv -v {} game/ \;
+              fi
+
+              # 2. Kiểm tra xem file nén có chứa Mod / Việt hóa (thư mục romfs) hay không
+              FOUND_ROMFS=$(find game/extracted_temp/current -type d -iname "romfs" | head -n 1)
+              if [ -n "$FOUND_ROMFS" ]; then
+                echo "  -> Phát hiện thư mục romfs (Mod/Việt hóa) trong $(basename "$archive"). Đang tích hợp vào game/romfs/..."
+                mkdir -p game/romfs
+                cp -R "$FOUND_ROMFS"/* game/romfs/
+              elif [ -z "$FOUND_ROMS" ]; then
+                # Nếu không chứa ROM và không có thư mục tên 'romfs', nhưng có file bên trong thì xem như Mod/Việt hóa
+                FILE_COUNT=$(find game/extracted_temp/current -type f | wc -l)
+                if [ "$FILE_COUNT" -gt 0 ]; then
+                  echo "  -> File nén $(basename "$archive") không chứa ROM. Đang tích hợp làm Mod/Việt hóa vào game/romfs/..."
+                  mkdir -p game/romfs
+                  cp -R game/extracted_temp/current/* game/romfs/
+                fi
+              fi
+
+              rm -rf game/extracted_temp/current
               rm -f "$archive"
             fi
           done
-
-          # Đưa tất cả file ROM được giải nén ra thư mục gốc game/
-          if [ -d "game/extracted_temp" ]; then
-            find game/extracted_temp -type f \( -name "*.nsp" -o -name "*.xci" -o -name "*.nsz" -o -name "*.xcz" \) -exec mv -v {} game/ \; 2>/dev/null || true
-            rm -rf game/extracted_temp
-          fi
-
-          # Di chuyển bất kỳ file ROM nào nằm trong thư mục con ra thẳng thư mục game/
-          find game -mindepth 2 -type f \( -name "*.nsp" -o -name "*.xci" -o -name "*.nsz" -o -name "*.xcz" \) -exec mv -v {} game/ \; 2>/dev/null || true
+          rm -rf game/extracted_temp
 
           # Liệt kê và kiểm tra các file ROM tìm thấy
           echo "===================================================="
@@ -157,7 +198,7 @@ jobs:
             exit 1
           fi
 
-      - name: Tải và chuẩn bị file Mod / Việt hóa (nếu có)
+      - name: Tải và chuẩn bị file Mod / Việt hóa (nếu có link riêng)
         if: "${{ inputs.mod_download_url != '' }}"
         run: |
           MOD_URL="${{ inputs.mod_download_url }}"
@@ -175,7 +216,6 @@ jobs:
             echo "Đang giải nén mod..."
             mkdir -p game/romfs
             unzip -q -o game/mod_temp/mod.zip -d game/mod_temp/extracted
-            # Tự động tìm thư mục romfs ở bất kỳ cấp độ nào bên trong file zip
             FOUND_ROMFS=$(find game/mod_temp/extracted -type d -iname "romfs" | head -n 1)
             if [ -n "$FOUND_ROMFS" ]; then
               echo "Đã tự động tìm thấy thư mục romfs tại: $FOUND_ROMFS"
@@ -184,11 +224,20 @@ jobs:
               echo "Không có thư mục romfs lồng nhau, sao chép toàn bộ nội dung..."
               cp -R game/mod_temp/extracted/* game/romfs/
             fi
-            echo "Đã chuẩn bị xong thư mục mod tại game/romfs:"
-            ls -la game/romfs/
             rm -rf game/mod_temp
           else
             echo "::warning::Không tìm thấy file mod sau khi tải, bỏ qua bước áp dụng mod."
+          fi
+
+      - name: Kiểm tra trạng thái Mod / Việt hóa
+        run: |
+          if [ -d "game/romfs" ] && [ "$(ls -A game/romfs 2>/dev/null)" ]; then
+            echo "===================================================="
+            echo "Đã cấu hình Mod / Việt hóa trong game/romfs:"
+            ls -la game/romfs/
+            echo "===================================================="
+          else
+            echo "Không phát hiện Mod / Việt hóa nào."
           fi
 
       - name: Đóng gói IPA (build_ipa_from_nsp.py)
