@@ -48,7 +48,7 @@ jobs:
           brew install zstd spirv-cross glslang sevenzip || true
           command -v dotnet || brew install --cask dotnet-sdk || true
           python3 -m pip install --upgrade pip
-          python3 -m pip install lz4 capstone fonttools nsz gdown "backports.zstd; python_version < '3.14'"
+          python3 -m pip install lz4 capstone fonttools nsz gdown requests "backports.zstd; python_version < '3.14'"
 
       - name: Thiết lập biến môi trường .NET
         run: |
@@ -91,6 +91,9 @@ jobs:
                 echo "Phát hiện link File Google Drive. Đang tải qua gdown..."
                 python3 -m gdown "$url" -O game/
               fi
+            elif [[ "$url" == *"gofile.io"* ]]; then
+              echo "Phát hiện link Gofile (Folder/File). Đang tải toàn bộ qua Gofile API..."
+              python3 dm/tools/download_gofile.py "$url" game/
             else
               echo "Đang tải qua curl..."
               curl -L -O -J --output-dir game "$url"
