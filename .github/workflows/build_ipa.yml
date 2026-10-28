@@ -124,20 +124,26 @@ jobs:
           # Dọn dẹp các thư mục con rỗng
           find game -mindepth 1 -not -path "game/romfs*" -not -path "game/extracted_temp*" -type d -empty -delete 2>/dev/null || true
 
-          # Kiểm tra và phân loại các file nén trong thư mục game/ (.zip, .7z, .rar, .tar.gz)
+          # Kiểm tra và phân loại các file nén trong thư mục game/ (.zip, .7z, .rar, .tar.gz, multi-part rar/7z)
           echo "----------------------------------------------------"
           echo "Kiểm tra và phân loại các file nén trong thư mục game/..."
           mkdir -p game/extracted_temp
-          for archive in game/*.zip game/*.7z game/*.rar game/*.tar.gz; do
+          for archive in game/*.zip game/*.7z game/*.rar game/*.tar.gz game/*.001 game/*.7z.* game/*.zip.*; do
             if [ -f "$archive" ]; then
+              # Bỏ qua các file part từ part 2 trở đi (vì khi giải nén part 1, 7z đã tự động ghép và giải nén toàn bộ)
+              if [[ "$archive" =~ \.part0*[2-9][0-9]*\.rar$ ]] || [[ "$archive" =~ \.0*[2-9][0-9]*$ ]]; then
+                echo "Bỏ qua file part phụ: $(basename "$archive") (đã được tự động xử lý cùng part 1)"
+                continue
+              fi
+
               echo "Phát hiện file nén: $(basename "$archive"). Đang tiến hành phân tích..."
               mkdir -p game/extracted_temp/current
-              if [[ "$archive" == *.zip ]]; then
-                unzip -q -o "$archive" -d game/extracted_temp/current/
+              if [[ "$archive" == *.zip ]] && [[ ! "$archive" =~ \.zip\.[0-9]+$ ]]; then
+                unzip -q -o "$archive" -d game/extracted_temp/current/ || true
               elif command -v 7z >/dev/null 2>&1; then
-                7z x -y "$archive" -ogame/extracted_temp/current/
+                7z x -y "$archive" -ogame/extracted_temp/current/ || true
               elif command -v 7za >/dev/null 2>&1; then
-                7za x -y "$archive" -ogame/extracted_temp/current/
+                7za x -y "$archive" -ogame/extracted_temp/current/ || true
               else
                 echo "::warning::Không tìm thấy công cụ giải nén phù hợp cho $archive"
               fi
@@ -169,8 +175,9 @@ jobs:
               rm -f "$archive"
             fi
           done
+          # Dọn dẹp các file part phụ còn lại nếu có
+          rm -f game/*.part*.rar game/*.00* game/*.7z.* game/*.zip.* 2>/dev/null || true
           rm -rf game/extracted_temp
-
           # Liệt kê và kiểm tra các file ROM tìm thấy
           echo "===================================================="
           echo "Danh sách các file ROM hợp lệ trong thư mục game/:"
