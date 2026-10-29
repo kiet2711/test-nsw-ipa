@@ -2257,6 +2257,34 @@ def main(args=None):
     PROG.stage('build nx_extract')
     nx = build_nx_extract(repo, work, logs, env)
     PROG.end()
+    mod_arg = getattr(args, 'mod', None) or MOD_DIR
+    mod_path = Path(os.path.expanduser(mod_arg)).resolve() if mod_arg else (
+        Path(os.environ['DM_MOD_DIR']).resolve() if 'DM_MOD_DIR' in os.environ else (
+            (nsp_dir / 'romfs') if (nsp_dir / 'romfs').is_dir() else (
+                (nsp_dir / 'mod') if (nsp_dir / 'mod').is_dir() else None
+            )
+        )
+    )
+    dirs = {}
+    for ver in versions:   # each merged version streams directly into its own image
+        b, u = picks[ver]
+        dirs[ver] = extract(nx, keys, ex, ver, b, u, None, logs, g, romfs_image=(mod_path is None))
+    bad = [] if derived else [f'{v}: {x}' for v in versions for x in build_mismatch(dirs[v], v, g)]   # every module's build ID must be the one the profile registers for its version
+    if bad and provisional: raise BuildError(f'not the builds provisional game profile {g.id} registers: {"; ".join(bad)}')
+    if bad:   # files of other builds under a registered version's tag: packed like any other version
+        derived = f'not the builds game profile {g.id} registers: {"; ".join(bad)}'
+        say(f'{derived}: packing {pkg_ver} from a profile derived from it')
+        versions, dirs = [pkg_ver], {pkg_ver: dirs[pkg_ver]}
+    reg = g   # the profile as registered (a derived build reports what it lacks against it)
+    if derived:   # the derived profile goes where a provisional one would, and every tool (game.py, make, build_ipa.sh) takes it first (DM_GAMES_FIRST)
+        pdir = Path(os.path.expanduser(args.profile_out or PROFILE_OUT)).resolve() if (args.profile_out or PROFILE_OUT) else nsp_dir / f'{app:016X}_build' / 'profile'
+        disp = derive_profile(g, pdir / g.id, pkg_ver, dirs[pkg_ver], g.words('modules'), app)
+        os.environ['DM_GAMES_DIR'] = env['DM_GAMES_DIR'] = os.pathsep.join([str(pdir)] + [d for d in os.environ.get('DM_GAMES_DIR', '').split(os.pathsep) if d and d != str(pdir)])
+        os.environ['DM_GAMES_FIRST'] = env['DM_GAMES_FIRST'] = '1'
+        g = gamemod.load(g.id)
+        say(f'derived game profile for {pkg_ver} ({disp}): {g.dir}')
+    sv = versions if derived else need   # the versions whose files the shaders come from
+    game = dirs[pkg_ver]
     if mod_path and mod_path.is_dir():
         romfs_subs = [p for p in mod_path.rglob('*') if p.is_dir() and p.name.lower() == 'romfs']
         mod_src = romfs_subs[0] if romfs_subs else mod_path
