@@ -103,6 +103,13 @@ The game may also write into an NVN object directly, without an NVN call, throug
 - **Fix:** `mtl_pool_del`, `res_add_at` and `res_remove` (`nvn_mtl.m`) each have their own `@autoreleasepool`, as `defer_drain` and the memory line's count already did ([Deferred-release drain without an autorelease pool](memory.md#deferred-release-drain-without-an-autorelease-pool)).
 - **Found on:** [Ghost Trick: Phantom Detective](../../dm/games/010029B018432000/README.md): 0 buffers freed but alive with the fix; GPU allocated 1.7 GB instead of 8.3 GB 300 frames into the boot and 2.9 GB instead of 9.9 to 11.7 GB in Chapter 1, resident memory, frame times and pictures unchanged (zero-copy buffers add no memory of their own). [Pokémon Sword](../../dm/games/0100ABF008968000/README.md): 8 to 0 at the title after 90 s. Earlier Mac logs show the count in most games, growing with play: Animal Crossing: New Horizons 3,113 after 27,900 frames, Pokémon Sword 2,050, Super Smash Bros. Ultimate 1,279, Pokémon Legends: Z-A 932 (small pools there: 100 to 300 MB).
 
+### Finalized textures kept by registered descriptor views
+
+- **Symptom:** GPU and resident memory keep growing during texture streaming while pool, residency and serial-object counts stay nearly flat, with no freed pool buffers alive.
+- **Cause:** texture descriptors copy their NVN texture metadata, so they remain readable after the API object's `Finalize`. Their cached Metal views, however, were released only when the descriptor ID was registered again. A game that streams textures into new IDs left those uploads retained indefinitely after their serial and shared-view entries had been removed.
+- **Fix:** index descriptors by texture serial and retire their cached base, compatible-type and image views at `mtl_tex_release`, through deferred release behind the GPU fence. Preserve the descriptor metadata: a late read resolves it through `tex_mtl` and caches its views for that submission, then retires them at commit. `t_cpu_tex` checks multiple descriptors, ID replacement and pixel-correct recorded replay after finalization and API-object reuse.
+- **Found on:** [Xenoblade Chronicles: Definitive Edition](../../dm/games/0100FF500E34A000/README.md#memory).
+
 ### Memory-pool tracking table grows in blocks
 
 - **Cause:** the memory-pool tracking table had a fixed 4,096 slots; a pool past the end would have its textures re-uploaded at every use.
@@ -156,6 +163,14 @@ Games read this count as a position in their own command memory and size their h
 
 ## Queues and syncs
 
+### Bindings belong to each queue
+
+- **Symptom:** choosing X-2 after the collection launcher crashes in `keys_hash`, reading control address `0x8000000000`; the program object now contains command-buffer data.
+- **Cause:** the replay kept one global binding state across queue destruction and creation. X-2 binds its fragment program first, so combining stages dereferenced the launcher's freed vertex program. Distinct live queues could also inherit each other's bindings.
+- **Fix:** give every queue initialization a serial. Save and restore draw state and render-target state when submissions switch queues, resolve composite programs again, and invalidate encoder caches. Finalization discards that queue's saved state. Reusing the queue's storage starts with defaults and cannot recover old guest pointers.
+- **Found on:** [FINAL FANTASY X/X-2 HD Remaster](../../dm/games/0100BC300CB48000/README.md), launcher-to-X-2 handoff.
+- **Check:** `t_queue_origin` tests independent state, switching back, finalization and address reuse with a poisoned old program pointer, alongside its real GPU culling tests.
+
 ### Fence syncs recorded in command buffers
 
 - **Symptom:** `nvnCommandBufferFenceSync` unimplemented, every `SyncWait` timed out at once.
@@ -185,6 +200,8 @@ Games read this count as a position in their own command memory and size their h
 - **Note:** the commit feedback handler's other blocks (diagnostics such as `DM_NVN_FUSE_CHECK`) still run when the handler does, after a fast-woken wait has returned.
 - **Resolved in review of #158:** claiming a record is not completion. The original early path skipped records a handler or another waiter owned and advanced `g_done` before their writes finished; a delayed callback also retained a recyclable slot pointer. `post_claim` now holds `g_post_mu` through `post_run`, and both contenders call `post_complete` with their fence to apply earlier records in order. A slot is reused under that lock only after its writes finish; an old fence cannot claim its new generation. `g_done` and `g_fence` are atomic.
 - **Check:** `make -C dm/gfx/tests GAME=010015100B514000 check_t_perf_order` covers a paused completion owner, a competing waiter, recycled-slot generations, event order and exactly-once writes, with direct/deferred encoding and fast wake disabled. `t_perf_order --cpu` and `perf-order-tsan` run the completion cases without a GPU in CI. The original harness reproduced premature completion; the corrected CPU cases pass ThreadSanitizer. Current gameplay coverage and timing limits are recorded in [BotW](../../dm/games/01007EF00011E000/README.md#final-synchronization-and-pass-validation-2026-10-26-current) and [Metroid Dread](../../dm/games/010093801237C000/README.md#final-gameplay-validation-2026-10-26-current); [13 Sentinels](../../dm/games/01003FC01670C000/README.md#rendering) has additional menu/report traffic coverage.
+- **Finite timeout budget:** when the event wait times out, the feedback wait uses only the remaining requested time. Previously an expired 20 ms event wait could be followed by another full 20 ms feedback wait. Elapsed time is taken from the monotonic wait clock independently of wait diagnostics. Zero/sub-millisecond polls, successful CPU completion, and the existing per-stage one-hour cap for `UINT64_MAX` are unchanged. This bounds the time assigned to the two waits, not scheduling delays or the CPU completion lock.
+- **Budget regression:** the `--cpu` path also uses a synthetic event, clock and condition-wait deadline to exercise the actual `mtl_wait_at` function without a Metal device. Run with `DM_NVN_FAST_WAKE=0/1` and `DM_NVN_WAITS=0/1`; no gameplay or FPS improvement is inferred from these timeout cases.
 - **Found on:** [The Legend of Zelda: Breath of the Wild](../../dm/games/01007EF00011E000/README.md): it reads 5 timestamp reports a frame right after the wait (its interval controller and dynamic resolution), which is why the waiter makes them itself. Wake after the GPU end 0.29 → 0.08 ms on an M2 Max, 0.147 ms on an iPhone 17 Pro Max.
 
 ### `nvnQueueFinish` waits for the GPU, not the display
@@ -273,6 +290,7 @@ Games read this count as a position in their own command memory and size their h
 - **Cause:** in a `CPU_UNCACHED` pool the CPU's writes reach memory with no flush, and the GPU reads that memory: what the storage holds is the texture's content. The host took a CPU-visible pool's storage only when the game had flushed it ([previous entry](#first-use-fill-of-storage-the-game-flushed)), and a game that writes an uncached pool never needs to. With `tex_flush_upload` and `tex_dirty_upload` the logo stayed magenta too, so its texels were apparently in the storage before the texture was registered, where no later write marks it.
 - **Fix:** `tex_init_fill` (`nvn_mtl.m`) also fills a new texture in a `CPU_UNCACHED` pool from its storage once, at first use, when the storage holds data; the same exclusions as for `CPU_NO_ACCESS` pools apply (packaged layouts, `COMPRESSIBLE`, multisample, depth / stencil, sparse). The log says `initial content: … a CPU_UNCACHED pool's`. A texture the CPU writes again after its first use still needs the profile's keys.
 - **Found on:** [Donkey Kong Country: Tropical Freeze](../../dm/games/0100C1F0051B6000/README.md): the 912×512 ASTC 5×5 title logo (242,374 of 376,832 storage bytes non-zero at first use, no packaged layout) and the menus' ASTC panels; with the fill and neither profile key, the title and every menu draw.
+- **Also found on:** [NieR:Automata US 1.0.3](../../dm/games/010056B015FE8000/README.md): 9S's 512×512 ASTC 6×6 sRGB face texture (ten mip levels) uses pool flags `0x22`; the GPU has zero blocks while 151,736 of 244,224 guest bytes are nonzero and decode to the correct face. His hair uses the same pool flags. GPU fixtures sample three independently colored mip levels in linear and sRGB ASTC, plus the CPU-cached no-flush rejection and one-time reuse.
 
 ### Mapped-range flushes taken as uploads (`tex_flush_upload`)
 
@@ -300,6 +318,22 @@ Games read this count as a position in their own command memory and size their h
 - **Fix:** `mtl_read_texels` reads any texture whose content is in guest memory there (a packaged layout, a CPU-written texture, or a `tex_dirty_upload` texture written since registration), on any thread, without an upload; and `nvn_ft_poll` (`hle_nvn.c`, at each submission after guest memory changed, at most 128 MB of textures per look, going on where it stopped) marks registered textures written after their first use. Textures the GPU renders into or writes (`mtl_tex_gpu_owned`) leave that list without an upload.
 - **Found on:** [The Legend of Zelda: Tears of the Kingdom](../../dm/games/0100F2C0115B6000/README.md) (Mac and iPhone): the stone blocks and steps of the opening cave got no torch light (on the Switch they are grey stone lit warm on the side facing the torch; here they kept their texture and the ambient light but stayed black). Their fragment shader `54e8c08998050e79` takes its roughness from a 5120×5120 BC4 atlas (roughness = the square root of its red, packed into the upper six bits of blue in colour target 3, which the tile-light shaders read); the atlas was all zero, and roughness 0 gives no point light. TOTK fills 1024×1024 BC4 material textures from the CPU with no NVN flush, reads them back with `nvnTextureReadTexels` on its own threads before any draw uses them, and copies the blocks into the atlas, which itself is filled after it was first bound.
 - **Note:** found by running MacNativeGames' build of the same game on the same save: their atlas held data and their blocks were lit (their `ReadTexels` reads guest memory). Traced with `DM_NVN_TEXDUMP` (the blocks' roughness bits in colour target 3), the shader's MSL, `DM_NVN_TEXRAW` on the atlas and `DM_NVN_TEXINFO` (guest bytes), then lldb reading the atlas memory inside their process. Fast loop: the in-cave autosave (`run/save`, keys `f2500:A,f2800:A,f3100:A,f3600:A`, shot at frame 4500); `DM_DETCLOCK` cannot be used (TOTK stops at frame 1 waiting for guest time).
+
+### `ReadTexels` on a texture of a sparse pool
+
+- **Symptom:** `[RED] upload batches belong to the submit thread only: up_begin called on thread '…'`, then an abort, with `pkg_upload` ← `tex_mtl` ← `mtl_read_texels` on the stack; or `CRASH sig=10` in `nvn_deswizzle` ← `mtl_read_texels`, at an address in a sparse virtual pool's reserved range.
+- **Cause:** `mtl_read_texels` read a texture from its storage only when it had a packaged layout or was CPU-written, while `tex_mtl_` also takes a sampled texture of a [sparse virtual pool](#sampled-textures-in-a-sparse-pool-uploaded-through-the-page-table) from its storage. Such a texture went through `tex_mtl`, which uploaded it (first use, or pages written or mapped since) on the game's thread, where the upload batch must not be used. And a texture of a sparse pool that did take the storage path was read at its virtual address directly, not through the page table: unmapped pages, and pages mapped at offsets the host cannot alias, are inaccessible there.
+- **Fix:** one predicate, `tex_from_storage`, decides for both `tex_mtl_` and `mtl_read_texels` which textures the host takes from their storage, and `mtl_read_texels` reads a sparse pool's texture through a copy gathered from its page table (`nvn_sparse_copy`, unmapped pages as 0), as `pkg_upload_` uploads it. Neither touches the host texture, so the read works on any thread. The `up_owner_check` abort stays: a texture upload on another thread is still a bug to find.
+- **Check:** `t_readback` reads a sparse texture over mapped and over unmapped pages, first on another thread and then on the submit thread. Before the fix, a profile without `tex_dirty_upload` aborted in `up_begin`, and TOTK's profile crashed with SIGBUS on the unmapped texture.
+- **Found on:** [The Legend of Zelda: Tears of the Kingdom](../../dm/games/0100F2C0115B6000/README.md) on an iPad Pro (M5), GitHub issue #471: an abort a few seconds after the app came back from the background (switching between Stage Manager and full screen triggers it), on thread `bake::ModuleMgr`. The reporter traced it to `mtl_read_texels`.
+
+### GPU copies into textures uploaded from their storage
+
+- **Symptom:** a streamed texture's small mip levels hold another texture or zeros while its large levels are right (`texraw <serial>.<level>`), so surfaces sampled with a mip bias or at a distance show bright speckles, dark blotches and sharp detail where the Switch shows soft texture (Yoshi's felt), from the moment finer levels stream in (the opening going dark).
+- **Cause:** the game fills a texture partly from the CPU and partly with GPU copies. Unreal's streamer re-creates a texture with more levels, copies the resident levels from the old texture on the GPU (`RHIAsyncReallocateTexture2D`: `nvnCommandBufferCopyTextureToTexture`, a level at a time) and writes the new, finer levels from the CPU. The host uploads a CPU-written texture whole from its storage, where the copied levels were never written: they held what the pool had there before.
+- **Fix:** a copy into a texture whose storage the host uploads from (a packaged layout, CPU-written, or registered by `tex_flush_upload` / `tex_dirty_upload` and not resolved yet) is written into the storage as well, as the hardware's copy would (`nvn_tex_mirror_t2t` / `nvn_tex_mirror_b2t` in `hle_nvn.c`, from `copy_t2t` / `copy_b2t` in `nvn_mtl.m`), when its source is a buffer or a texture whose storage holds its content; the write marks the pages, so the next upload carries the levels. When the source is the GPU's (a texture whose host texture, or the one its packaged record holds, can be rendered into or written by shaders, `tex_gpu_touched`; a buffer a copy, fill or update queued in the submission, a shader or a copy of a submission still running wrote, `pend_hits` / `sbw_hits` / `gw_live`), when a readback into the source or the destination is still pending (`mrb_pending`: the storage lacks those bytes until it lands, and the later copy must land after it), or when the CPU mirror cannot do the copy (a format change, a scaled or flipped copy drawn by `copy_t2t_draw`), the destination region is read back after the copy on the GPU into a shared buffer and written into the storage in the submission's completion handler, before its fence is published (`mirror_readback` / `mirror_rb_land`, a kind 4 post-op). Depth and stencil formats, multisample textures and 3D destinations are left out and reported red.
+- **Check:** `t_nvn` 6c3 checks region and whole-level copies between textures of different block heights (RGBA8, BC1) and from a strided buffer, byte for byte against a level round trip; `t_readback` copies a cleared render target into a packaged texture and reads the clear colour back from its storage. In the log, `texture→texture copy into ser=… written into the storage as well` or `… read back into the storage when the GPU completes`.
+- **Found on:** [Yoshi's Crafted World](../../dm/games/01006000040C2000/README.md): the Yoshis' 1024² DXT1 base colour and BC5 normal textures, 11 levels; level 4 of one held a pink felt texture, of the others zeros; the speckles began when the opening went dark.
 
 ### Sampled textures in a sparse pool uploaded through the page table
 
@@ -341,6 +375,14 @@ Games read this count as a position in their own command memory and size their h
 - **Check:** `t_dirty_race` covers the BUSY-page retry, stamp ordering, and a check between clock allocation and generation publication in both unprotect paths. The publication cases fail on main; the batched case also fails with the original PR applied.
 
 ## NVN entry points
+
+### Integer sampler border colours
+
+- **Symptom:** `[RED] NVN unimplemented function called: nvnSamplerBuilderSetBorderColorui` during renderer initialization.
+- **Cause:** only the floating-point setter was implemented.
+- **Fix:** implement signed and unsigned integer setters with numeric conversion into the sampler's border-colour state. Metal's existing selection among transparent black, opaque black and opaque white then sees integer zero and one correctly; bit-casting integer one to float would select the wrong colour.
+- **Found on:** [FINAL FANTASY X/X-2 HD Remaster](../../dm/games/0100BC300CB48000/README.md), launcher and both games.
+- **Check:** `t_nvn` invokes both setters through the real entry-point lookup and checks initialized sampler state.
 
 ### Version and capability checks that fail quietly
 
@@ -421,6 +463,13 @@ Games read this count as a position in their own command memory and size their h
 
 - `nvnTexturePoolRegisterImage` writes the same table as `RegisterTexture` (image handles are pool indices).
 - **Found on:** [Hyrule Warriors: Age of Calamity](../../dm/games/01002B00111A2000/README.md).
+
+### Image bindings supply shader-write intent
+
+- **Symptom:** `[RED] texture bound to an image slot lacks the shader-write usage`, and compute image writes go to a dummy texture.
+- **Cause:** Metal usage came only from the texture builder's `IMAGE` flag. A render texture may instead have only `COMPRESSIBLE`, then its descriptor be used in a shader image slot. Snowdrop writes these descriptors with `RegisterTexture`, not `RegisterImage`. Its depth-conversion compute shader `cf5ba107e29b51f4` gathers from a depth texture and unconditionally writes four pixels per invocation to a 256×256 R16F texture whose flags are `0x8`. Its Metal texture had read / render-target usage (`0x5`), so the image binding was rejected.
+- **Fix:** before a draw or dispatch uses a writable image, `image_prepare` resolves it with image intent and ensures its backing allows shader writes. `RegisterImage` also keeps this intent in its host snapshot; neither path changes the guest texture. A texture already rendered into is upgraded through `tex_upgrade`: end its render pass first, copy every mip / slice, replace all shared serials and invalidate cached sampled views. Load-only image slots accept read-only storage without upgrading, and ordinary render targets retain their original usage. `t_image_usage.m` exercises both registration entry points, a late registration while a render pass is open, the clear and other mip surviving the upgrade, and a GPU image write read through a sampled alias.
+- **Found on:** [Mario + Rabbids Sparks of Hope](../../dm/games/0100317013770000/README.md) (SDK 13.3.5, Snowdrop).
 
 ### Plural texture binds, builder-registered samplers, strided texel writes, device item 0x67
 
