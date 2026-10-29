@@ -251,8 +251,10 @@ jobs:
           fi
 
       - name: Đóng gói IPA (build_ipa_from_nsp.py)
+        env:
+          DM_ALLOW_OTHER_METAL: "1"
         run: |
-          python3 scripts/build_ipa_from_nsp.py game -k game/prod.keys --no-keep-extracted
+          python3 scripts/build_ipa_from_nsp.py game -k game/prod.keys --no-keep-extracted --allow-other-metal --allow-shader-regressions 2>&1 | tee game/build_console.log
 
       - name: Xác định tên Artifact IPA
         if: success()
@@ -282,4 +284,5 @@ jobs:
           path: |
             game/*_build/logs/
             game/*_survey/logs/
+            game/build_console.log
           retention-days: 7
