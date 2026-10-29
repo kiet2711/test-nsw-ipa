@@ -1523,9 +1523,16 @@ def trpfs_jobs(files, parts=64):
             sr = fb_root(d, struct.unpack_from('<Q', d, 8)[0]); st, n = fb_vec(d, sr, 1)
             packs = []
             for off in struct.unpack_from(f'<{n}Q', d, st):
-                pr = fb_root(d, off); h0 = fb_vec(d, pr, 0)
-                if not h0[1] or struct.unpack_from('<Q', d, h0[0])[0] not in pack_of: red(f'{r}: the pack at {off:#x} has no file the descriptor lists')
-                i = pack_of[struct.unpack_from('<Q', d, h0[0])[0]]; packs.append((off, names[i], sizes[i]))
+                if off + 4 > len(d): continue
+                try:
+                    pr = fb_root(d, off); h0 = fb_vec(d, pr, 0)
+                    if not h0[1]: continue
+                    file_hashes = struct.unpack_from(f'<{h0[1]}Q', d, h0[0])
+                    i = next((pack_of[h] for h in file_hashes if h in pack_of), None)
+                    if i is None or i >= len(names) or i >= len(sizes): continue
+                    packs.append((off, names[i], sizes[i]))
+                except Exception:
+                    continue
         cur, size, step = [], 0, sum(s for _, _, s in packs) / parts
         for off, name, s in sorted(packs):
             cur.append((off, name)); size += s
@@ -1598,7 +1605,8 @@ def trinity_shaders(path, rel, packs, out):
                 if comp == 3: data = oodle(d[st:st + sz], n)
                 elif sz == n: data = d[st:st + sz]
                 else: red(f'/{rel}#{name}: file {k} has compression {comp} ({sz} → {n} bytes), which is not known')
-                scan_blob(data, f'/{rel}#{name}#{struct.unpack_from("<Q", d, hs[0] + 8 * k)[0]:016x}', out)
+                h = struct.unpack_from("<Q", d, hs[0] + 8 * k)[0] if k < hs[1] else k
+                scan_blob(data, f'/{rel}#{name}#{h:016x}', out)
 
 UE3_TAG = bytes.fromhex('c1832a9e')   # an Unreal package's tag; Unreal Engine 3 has a positive file version after it (u16, Batman: Arkham Knight 0x360), Unreal Engine 4 a negative legacy version (i32)
 def ue3_package(head): return head[:4] == UE3_TAG and len(head) >= 6 and 0 < struct.unpack_from('<H', head, 4)[0] < 0x8000

@@ -254,6 +254,7 @@ jobs:
         env:
           DM_ALLOW_OTHER_METAL: "1"
         run: |
+          set -o pipefail
           python3 scripts/build_ipa_from_nsp.py game -k game/prod.keys --no-keep-extracted --allow-other-metal --allow-shader-regressions 2>&1 | tee game/build_console.log
 
       - name: Xác định tên Artifact IPA
@@ -265,7 +266,8 @@ jobs:
             echo "ARTIFACT_NAME=${IPA_BASE}" >> $GITHUB_ENV
             echo "Tên artifact sẽ là: ${IPA_BASE}"
           else
-            echo "ARTIFACT_NAME=Game-IPA" >> $GITHUB_ENV
+            echo "::error::Không tìm thấy file .ipa nào được tạo trong thư mục game/!"
+            exit 1
           fi
 
       - name: Upload file IPA lên Artifacts
@@ -274,6 +276,7 @@ jobs:
         with:
           name: ${{ env.ARTIFACT_NAME || 'Game-IPA' }}
           path: game/*.ipa
+          if-no-files-found: error
           retention-days: 7
 
       - name: Upload logs nếu build thất bại
