@@ -23,6 +23,11 @@ on:
         required: false
         type: string
         default: ''
+      separate_romfs:
+        description: 'Tách riêng RomFS (Bật để tạo IPA nhẹ ~200MB + file romfs.img riêng để chép vào Documents sau khi cài, tránh lỗi ESign/Sideloadly)'
+        required: false
+        type: boolean
+        default: false
 
 env:
   DEFAULT_URL: 'https://drive.google.com/file/d/1D527vQTykL4WggIbWdGEbttQlxyR2Ua5/view?usp=sharing'
@@ -255,7 +260,25 @@ jobs:
           DM_ALLOW_OTHER_METAL: "1"
         run: |
           set -o pipefail
-          python3 scripts/build_ipa_from_nsp.py game -k game/prod.keys --no-keep-extracted --allow-other-metal --allow-shader-regressions 2>&1 | tee game/build_console.log
+          EXTRA_ARGS="--no-keep-extracted"
+          if [ "${{ inputs.separate_romfs }}" = "true" ]; then
+            echo "===================================================="
+            echo "Đang bật chế độ tách riêng RomFS (--romfs separate)..."
+            echo "===================================================="
+            EXTRA_ARGS="--keep-extracted --romfs separate"
+          fi
+          python3 scripts/build_ipa_from_nsp.py game -k game/prod.keys $EXTRA_ARGS --allow-other-metal --allow-shader-regressions 2>&1 | tee game/build_console.log
+
+          if [ "${{ inputs.separate_romfs }}" = "true" ]; then
+            FOUND_IMG=$(find game/*_build/extract -name "RomFS.img" | head -n 1)
+            if [ -n "$FOUND_IMG" ]; then
+              echo "Đã tìm thấy RomFS.img tại: $FOUND_IMG. Đang sao chép ra game/romfs.img..."
+              cp -v "$FOUND_IMG" game/romfs.img
+            else
+              echo "::warning::Không tìm thấy file RomFS.img sau khi build!"
+            fi
+            rm -rf game/*_build/extract
+          fi
 
       - name: Xác định tên Artifact IPA
         if: success()
@@ -277,6 +300,15 @@ jobs:
           name: ${{ env.ARTIFACT_NAME || 'Game-IPA' }}
           path: game/*.ipa
           if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload file RomFS.img riêng (nếu bật tách RomFS)
+        uses: actions/upload-artifact@v4
+        if: success() && inputs.separate_romfs == true
+        with:
+          name: ${{ env.ARTIFACT_NAME || 'Game' }}-romfs-data
+          path: game/romfs.img
+          if-no-files-found: warn
           retention-days: 7
 
       - name: Upload logs nếu build thất bại
